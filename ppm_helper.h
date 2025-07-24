@@ -39,7 +39,7 @@ bool read_ppm(const std::string& filename, Image& img) {
     return true;
 }
 
-// Writes an image to a P3 PPM file
+// Writes an image to a P3 PPM file (Robust Version)
 bool write_ppm(const std::string& filename, const Image& img) {
     std::ofstream file(filename);
     if (!file.is_open()) {
@@ -50,9 +50,23 @@ bool write_ppm(const std::string& filename, const Image& img) {
     file << img.width << " " << img.height << "\n";
     file << "255\n";
 
+    int line_char_count = 0;
     for (size_t i = 0; i < img.data.size(); ++i) {
-        file << static_cast<int>(img.data[i]) << (((i + 1) % 15 == 0) ? "\n" : " ");
+        std::string s = std::to_string(static_cast<int>(img.data[i]));
+        // Add a space before the number if it's not the start of a line
+        if (line_char_count > 0) {
+            file << " ";
+            line_char_count++;
+        }
+        // If adding the next number would exceed 70 characters, start a new line
+        if (line_char_count + s.length() > 70) {
+            file << "\n";
+            line_char_count = 0;
+        }
+        file << s;
+        line_char_count += s.length();
     }
+    file << "\n"; // Ensure the file ends with a newline
     return true;
 }
 
