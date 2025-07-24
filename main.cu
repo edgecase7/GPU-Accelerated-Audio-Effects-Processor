@@ -2,144 +2,119 @@
 #include <vector>
 #include <string>
 #include <chrono>
-#include <cmath> // Needed for std::abs
-#include "wav_helper.h"
+#include <cmath>
+#include "ppm_helper.h"
 
-// CUDA kernel for performing convolution
-__global__ void convolution_kernel(const float* input, const float* ir, float* output, int input_len, int ir_len, int output_len) {
-    int n = blockIdx.x * blockDim.x + threadIdx.x;
+// Kernel to convert RGB image to grayscale
+__global__ void rgb_to_grayscale_kernel(const unsigned char* input, unsigned char* output, int width, int height) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (n < output_len) {
-        float sum = 0.0f;
-        for (int k = 0; k < ir_len; ++k) {
-            int input_idx = n - k;
-            if (input_idx >= 0 && input_idx < input_len) {
-                sum += input[input_idx] * ir[k];
+    if (x < width && y < height) {
+        int idx = (y * width + x) * 3;
+        int gray_idx = y * width + x;
+        
+        unsigned char r = input[idx];
+        unsigned char g = input[idx + 1];
+        unsigned char b = input[idx + 2];
+        
+        output[gray_idx] = static_cast<unsigned char>(0.21f * r + 0.72f * g + 0.07f * b);
+    }
+}
+
+// Kernel to apply Sobel filter for edge detection
+__global__ void sobel_filter_kernel(const unsigned char* grayscale_input, unsigned char* output, int width, int height) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int Gx[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
+    int Gy[3][3] = {{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}};
+
+    if (x >= 1 && x < width - 1 && y >= 1 && y < height - 1) {
+        float sumX = 0;
+        float sumY = 0;
+
+        for (int i = -1; i <= 1; i++) {
+            for (int j = -1; j <= 1; j++) {
+                int pixel_val = grayscale_input[(y + i) * width + (x + j)];
+                sumX += pixel_val * Gx[i + 1][j + 1];
+                sumY += pixel_val * Gy[i + 1][j + 1];
             }
         }
-        output[n] = sum;
+        
+        float magnitude = sqrtf(sumX * sumX + sumY * sumY);
+        output[y * width + x] = static_cast<unsigned char>(fminf(255.0f, magnitude));
+    } else {
+        output[y * width + x] = 0;
     }
 }
-
-// CPU version for comparison
-void convolution_cpu(const std::vector<float>& input, const std::vector<float>& ir, std::vector<float>& output) {
-    int output_len = input.size() + ir.size() - 1;
-    output.assign(output_len, 0.0f);
-
-    for (int n = 0; n < output_len; ++n) {
-        for (int k = 0; k < ir.size(); ++k) {
-            if (n - k >= 0 && n - k < input.size()) {
-                output[n] += input[n - k] * ir[k];
-            }
-        }
-    }
-}
-
-// NEW FUNCTION: Normalizes audio to the [-1.0, 1.0] range
-void normalize(std::vector<float>& samples) {
-    float max_abs_val = 0.0f;
-    for (float sample : samples) {
-        if (std::abs(sample) > max_abs_val) {
-            max_abs_val = std::abs(sample);
-        }
-    }
-
-    if (max_abs_val > 0.0f) {
-        std::cout << "Normalizing audio (max value was " << max_abs_val << ")" << std::endl;
-        for (float& sample : samples) {
-            sample /= max_abs_val;
-        }
-    }
-}
-
 
 int main(int argc, char* argv[]) {
-    if (argc != 4) {
-        std::cerr << "Usage: " << argv[0] << " <input_file.wav> <ir_file.wav> <output_file.wav>" << std::endl;
+    if (argc != 3) {
+        std::cerr << "Usage: " << argv[0] << " <input_file.ppm> <output_file.ppm>" << std::endl;
         return 1;
     }
 
     std::string input_filename = argv[1];
-    std::string ir_filename = argv[2];
-    std::string output_filename = argv[3];
+    std::string output_filename = argv[2];
 
-    // Load audio data
-    std::vector<float> h_input, h_ir;
-    int sample_rate;
-    if (!read_wav(input_filename, h_input, sample_rate) || !read_wav(ir_filename, h_ir, sample_rate)) {
-        return 1;
-    }
-
-    std::cout << "Input signal length: " << h_input.size() << " samples" << std::endl;
-    std::cout << "IR signal length:    " << h_ir.size() << " samples" << std::endl;
-
-    // --- CPU Execution ---
-    std::cout << "\n--- Running CPU Convolution ---" << std::endl;
-    std::vector<float> h_output_cpu;
-    auto start_cpu = std::chrono::high_resolution_clock::now();
-    convolution_cpu(h_input, h_ir, h_output_cpu);
-    auto end_cpu = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> cpu_duration = end_cpu - start_cpu;
+    Image h_input_rgb;
+    if (!read_ppm(input_filename, h_input_rgb)) { return 1; }
     
-    normalize(h_output_cpu); // <-- FIX APPLIED HERE
-    
-    std::cout << "CPU execution time: " << cpu_duration.count() << " ms" << std::endl;
-    write_wav("output_cpu.wav", h_output_cpu, sample_rate);
-    std::cout << "CPU output saved to output_cpu.wav" << std::endl;
+    int width = h_input_rgb.width;
+    int height = h_input_rgb.height;
+    std::cout << "Image loaded: " << width << "x" << height << std::endl;
 
+    unsigned char *d_input_rgb, *d_grayscale, *d_output;
+    cudaMalloc(&d_input_rgb, width * height * 3 * sizeof(unsigned char));
+    cudaMalloc(&d_grayscale, width * height * sizeof(unsigned char));
+    cudaMalloc(&d_output, width * height * sizeof(unsigned char));
 
-    // --- GPU Execution ---
-    std::cout << "\n--- Running GPU Convolution ---" << std::endl;
-    float *d_input, *d_ir, *d_output;
-    int output_len = h_input.size() + h_ir.size() - 1;
-    std::vector<float> h_output_gpu(output_len);
+    cudaMemcpy(d_input_rgb, h_input_rgb.data.data(), width * height * 3 * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
-    // Allocate memory on the GPU
-    cudaMalloc(&d_input, h_input.size() * sizeof(float));
-    cudaMalloc(&d_ir, h_ir.size() * sizeof(float));
-    cudaMalloc(&d_output, output_len * sizeof(float));
+    dim3 threadsPerBlock(16, 16);
+    dim3 numBlocks((width + threadsPerBlock.x - 1) / threadsPerBlock.x, (height + threadsPerBlock.y - 1) / threadsPerBlock.y);
 
-    // Copy data from host to device
-    cudaMemcpy(d_input, h_input.data(), h_input.size() * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_ir, h_ir.data(), h_ir.size() * sizeof(float), cudaMemcpyHostToDevice);
+    std::cout << "\n--- Running GPU Image Processing ---" << std::endl;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
 
-    // Setup kernel launch configuration
-    int threads_per_block = 256;
-    int blocks_per_grid = (output_len + threads_per_block - 1) / threads_per_block;
-    
-    // Use CUDA events for accurate timing
-    cudaEvent_t start_gpu, stop_gpu;
-    cudaEventCreate(&start_gpu);
-    cudaEventCreate(&stop_gpu);
+    rgb_to_grayscale_kernel<<<numBlocks, threadsPerBlock>>>(d_input_rgb, d_grayscale, width, height);
+    sobel_filter_kernel<<<numBlocks, threadsPerBlock>>>(d_grayscale, d_output, width, height);
 
-    cudaEventRecord(start_gpu);
-    convolution_kernel<<<blocks_per_grid, threads_per_block>>>(d_input, d_ir, d_output, h_input.size(), h_ir.size(), output_len);
-    cudaEventRecord(stop_gpu);
-
-    cudaEventSynchronize(stop_gpu);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
     float gpu_duration_ms = 0;
-    cudaEventElapsedTime(&gpu_duration_ms, start_gpu, stop_gpu);
+    cudaEventElapsedTime(&gpu_duration_ms, start, stop);
     std::cout << "GPU kernel execution time: " << gpu_duration_ms << " ms" << std::endl;
 
-    // Copy result back from device to host
-    cudaMemcpy(h_output_gpu.data(), d_output, output_len * sizeof(float), cudaMemcpyDeviceToHost);
-    
-    normalize(h_output_gpu); // <-- FIX APPLIED HERE
-    
-    write_wav(output_filename, h_output_gpu, sample_rate);
-    std::cout << "GPU output saved to " << output_filename << std::endl;
+    Image h_output_bw;
+    h_output_bw.width = width;
+    h_output_bw.height = height;
+    h_output_bw.data.resize(width * height);
+    cudaMemcpy(h_output_bw.data.data(), d_output, width * height * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
-    // Free GPU memory
-    cudaFree(d_input);
-    cudaFree(d_ir);
+    Image h_output_rgb;
+    h_output_rgb.width = width;
+    h_output_rgb.height = height;
+    h_output_rgb.data.resize(width * height * 3);
+    for(int i = 0; i < width * height; ++i) {
+        h_output_rgb.data[i * 3 + 0] = h_output_bw.data[i];
+        h_output_rgb.data[i * 3 + 1] = h_output_bw.data[i];
+        h_output_rgb.data[i * 3 + 2] = h_output_bw.data[i];
+    }
+
+    if (write_ppm(output_filename, h_output_rgb)) {
+        std::cout << "Output image saved to " << output_filename << std::endl;
+    }
+
+    cudaFree(d_input_rgb);
+    cudaFree(d_grayscale);
     cudaFree(d_output);
-    cudaEventDestroy(start_gpu);
-    cudaEventDestroy(stop_gpu);
-
-    // --- Final Analysis ---
-    std::cout << "\n--- Analysis ---" << std::endl;
-    double speedup = cpu_duration.count() / gpu_duration_ms;
-    std::cout << "Speedup (CPU Time / GPU Time): " << speedup << "x" << std::endl;
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     return 0;
 }
