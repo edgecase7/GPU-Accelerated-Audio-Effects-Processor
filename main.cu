@@ -22,39 +22,15 @@ __global__ void rgb_to_grayscale_kernel(const unsigned char* input, unsigned cha
     }
 }
 
-// Kernel to apply Sobel filter for edge detection
+// DEBUGGING KERNEL: This version simply copies the grayscale image to the output.
 __global__ void sobel_filter_kernel(const unsigned char* grayscale_input, unsigned char* output, int width, int height) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    // Exit if the thread is out of bounds of the image
-    if (x >= width || y >= height) {
-        return;
-    }
-
-    // Sobel kernels
-    int Gx[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
-    int Gy[3][3] = {{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}};
-
-    // Check if we are on a border pixel
-    if (x < 1 || x >= width - 1 || y < 1 || y >= height - 1) {
-        // Set border pixels to black
-        output[y * width + x] = 0;
-    } else {
-        // Apply the filter for inner pixels
-        float sumX = 0;
-        float sumY = 0;
-
-        for (int i = -1; i <= 1; i++) {
-            for (int j = -1; j <= 1; j++) {
-                int pixel_val = grayscale_input[(y + i) * width + (x + j)];
-                sumX += pixel_val * Gx[i + 1][j + 1];
-                sumY += pixel_val * Gy[i + 1][j + 1];
-            }
-        }
-        
-        float magnitude = sqrtf(sumX * sumX + sumY * sumY);
-        output[y * width + x] = static_cast<unsigned char>(fminf(255.0f, magnitude));
+    if (x < width && y < height) {
+        int idx = y * width + x;
+        // This line now just copies the input to the output for testing purposes.
+        output[idx] = grayscale_input[idx];
     }
 }
 
@@ -91,6 +67,8 @@ int main(int argc, char* argv[]) {
     cudaEventRecord(start);
 
     rgb_to_grayscale_kernel<<<numBlocks, threadsPerBlock>>>(d_input_rgb, d_grayscale, width, height);
+    
+    // We are now calling the simplified kernel for debugging.
     sobel_filter_kernel<<<numBlocks, threadsPerBlock>>>(d_grayscale, d_output, width, height);
 
     cudaEventRecord(stop);
