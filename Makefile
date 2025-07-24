@@ -1,4 +1,4 @@
-# Makefile for CUDA Audio Processor
+# Makefile for CUDA Image Processor
 
 # Compiler
 NVCC = nvcc
@@ -9,7 +9,7 @@ NVCC = nvcc
 CXXFLAGS = -std=c++14 -O3
 
 # The target executable
-TARGET = audio_processor
+TARGET = image_processor
 
 # The source files
 SOURCES = main.cu
@@ -22,6 +22,6 @@ $(TARGET): $(SOURCES)
 
 # Rule to clean up the build directory
 clean:
-	rm -f $(TARGET) *.o output_*.wav
+	rm -f $(TARGET) *.o output_*.ppm checkerboard.ppm
 
 .PHONY: all clean
