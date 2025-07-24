@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include <chrono>
+#include <cmath> // Needed for std::abs
 #include "wav_helper.h"
 
 // CUDA kernel for performing convolution
@@ -34,6 +35,23 @@ void convolution_cpu(const std::vector<float>& input, const std::vector<float>& 
     }
 }
 
+// NEW FUNCTION: Normalizes audio to the [-1.0, 1.0] range
+void normalize(std::vector<float>& samples) {
+    float max_abs_val = 0.0f;
+    for (float sample : samples) {
+        if (std::abs(sample) > max_abs_val) {
+            max_abs_val = std::abs(sample);
+        }
+    }
+
+    if (max_abs_val > 0.0f) {
+        std::cout << "Normalizing audio (max value was " << max_abs_val << ")" << std::endl;
+        for (float& sample : samples) {
+            sample /= max_abs_val;
+        }
+    }
+}
+
 
 int main(int argc, char* argv[]) {
     if (argc != 4) {
@@ -62,6 +80,9 @@ int main(int argc, char* argv[]) {
     convolution_cpu(h_input, h_ir, h_output_cpu);
     auto end_cpu = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> cpu_duration = end_cpu - start_cpu;
+    
+    normalize(h_output_cpu); // <-- FIX APPLIED HERE
+    
     std::cout << "CPU execution time: " << cpu_duration.count() << " ms" << std::endl;
     write_wav("output_cpu.wav", h_output_cpu, sample_rate);
     std::cout << "CPU output saved to output_cpu.wav" << std::endl;
@@ -102,6 +123,9 @@ int main(int argc, char* argv[]) {
 
     // Copy result back from device to host
     cudaMemcpy(h_output_gpu.data(), d_output, output_len * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    normalize(h_output_gpu); // <-- FIX APPLIED HERE
+    
     write_wav(output_filename, h_output_gpu, sample_rate);
     std::cout << "GPU output saved to " << output_filename << std::endl;
 
