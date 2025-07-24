@@ -27,10 +27,21 @@ __global__ void sobel_filter_kernel(const unsigned char* grayscale_input, unsign
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
+    // Exit if the thread is out of bounds of the image
+    if (x >= width || y >= height) {
+        return;
+    }
+
+    // Sobel kernels
     int Gx[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
     int Gy[3][3] = {{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}};
 
-    if (x >= 1 && x < width - 1 && y >= 1 && y < height - 1) {
+    // Check if we are on a border pixel
+    if (x < 1 || x >= width - 1 || y < 1 || y >= height - 1) {
+        // Set border pixels to black
+        output[y * width + x] = 0;
+    } else {
+        // Apply the filter for inner pixels
         float sumX = 0;
         float sumY = 0;
 
@@ -44,8 +55,6 @@ __global__ void sobel_filter_kernel(const unsigned char* grayscale_input, unsign
         
         float magnitude = sqrtf(sumX * sumX + sumY * sumY);
         output[y * width + x] = static_cast<unsigned char>(fminf(255.0f, magnitude));
-    } else {
-        output[y * width + x] = 0;
     }
 }
 
